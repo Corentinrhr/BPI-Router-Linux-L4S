@@ -39,6 +39,10 @@
 #define MXL862XX_READY_TIMEOUT_MS	10000
 #define MXL862XX_READY_POLL_MS		100
 
+#define MXL862XX_TCM_INST_SEL		0xe00
+#define MXL862XX_TCM_CBS		0xe12
+#define MXL862XX_TCM_EBS		0xe13
+
 static const int mxl862xx_flood_meters[] = {
 	MXL862XX_BRIDGE_PORT_EGRESS_METER_UNKNOWN_UC,
 	MXL862XX_BRIDGE_PORT_EGRESS_METER_UNKNOWN_MC_IP,
@@ -290,15 +294,24 @@ static int mxl862xx_bridge_config_fwd(struct dsa_switch *ds, u16 bridge_id,
 	return ret;
 }
 
+
 /* Allocate a single zero-rate meter shared by all ports and flood types.
  * All flood-blocking egress sub-meters point to this one meter so that
- * the single CBS=64 token bucket fills as quickly as possible, minimising
- * the one-packet leak inherent with the hardware minimum CBS.
+ * any packet hitting this meter is unconditionally dropped.
+ *
+ * The firmware API requires CBS >= 64 (its bs2ls encoder clamps smaller
+ * values), so the meter is initially configured with CBS=EBS=64.
+ * A zero-rate bucket starts full at CBS bytes, which would let one packet
+ * through before the bucket empties. To eliminate this one-packet leak
+ * we override CBS and EBS to zero via direct register writes after the
+ * API call - the hardware accepts CBS=0 and immediately flags the bucket
+ * as exceeded, so no traffic can ever pass.
  */
 static int mxl862xx_setup_drop_meter(struct dsa_switch *ds)
 {
 	struct mxl862xx_qos_meter_cfg meter = {};
 	struct mxl862xx_priv *priv = ds->priv;
+	struct mxl862xx_register_mod reg;
 	int ret;
 
 	/* meter_id=0 means auto-alloc */
@@ -317,7 +330,24 @@ static int mxl862xx_setup_drop_meter(struct dsa_switch *ds)
 
 	priv->drop_meter = le16_to_cpu(meter.meter_id);
 
-	return 0;
+	/* Select the meter instance for subsequent TCM register access. */
+	reg.addr = cpu_to_le16(MXL862XX_TCM_INST_SEL);
+	reg.data = cpu_to_le16(priv->drop_meter);
+	reg.mask = cpu_to_le16(0xffff);
+	ret = MXL862XX_API_WRITE(priv, MXL862XX_COMMON_REGISTERMOD, reg);
+	if (ret)
+		return ret;
+
+	/* Zero CBS so the committed bucket starts empty (exceeded). */
+	reg.addr = cpu_to_le16(MXL862XX_TCM_CBS);
+	reg.data = 0;
+	ret = MXL862XX_API_WRITE(priv, MXL862XX_COMMON_REGISTERMOD, reg);
+	if (ret)
+		return ret;
+
+	/* Zero EBS so the excess bucket starts empty (exceeded). */
+	reg.addr = cpu_to_le16(MXL862XX_TCM_EBS);
+	return MXL862XX_API_WRITE(priv, MXL862XX_COMMON_REGISTERMOD, reg);
 }
 
 static int mxl862xx_setup(struct dsa_switch *ds)
