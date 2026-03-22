@@ -4,6 +4,7 @@
 #define __MXL862XX_H
 
 #include <linux/mdio.h>
+#include <linux/workqueue.h>
 #include <net/dsa.h>
 
 #define MXL862XX_MAX_PORTS		17
@@ -160,18 +161,47 @@ struct mxl862xx_evlan_block {
  * @vf:                  per-port VLAN Filter block state
  * @ingress_evlan:       ingress extended VLAN block state
  * @egress_evlan:        egress extended VLAN block state
+ * @priv:                back-pointer to switch private data; needed by
+ *                       deferred work handlers to access ds and priv
+ * @setup_done:          set at end of port_setup, cleared at start of
+ *                       port_teardown; guards deferred work against
+ *                       acting on torn-down state
+ * @bridge_port_cpu:     virtual bridge port ID for tag_8021q CPU-side CTP
+ * @host_flood_block:    bitmask of firmware meter indices used to block
+ *                       host flooding on the virtual bridge port (tag_8021q)
+ * @host_flood_uc:       desired host unicast flood state (true = flood);
+ *                       updated atomically by port_set_host_flood, consumed
+ *                       by the deferred host_flood_work
+ * @host_flood_mc:       desired host multicast flood state (true = flood)
+ * @host_flood_work:     deferred work for applying host flood changes;
+ *                       port_set_host_flood runs in atomic context (under
+ *                       netif_addr_lock) so firmware calls must be deferred.
+ *                       The worker acquires rtnl_lock() to serialize with
+ *                       DSA callbacks and checks @setup_done to avoid
+ *                       acting on torn-down ports.
+ * @tag_8021q_vid:       currently assigned tag_8021q management VID
  */
 struct mxl862xx_port {
+	struct mxl862xx_priv *priv;
 	u16 fid;
 	DECLARE_BITMAP(portmap, MXL862XX_MAX_BRIDGE_PORTS);
 	unsigned long flood_block;
 	bool learning;
+	bool setup_done;
 	/* VLAN state */
 	u16 pvid;
 	bool vlan_filtering;
 	struct mxl862xx_vf_block vf;
 	struct mxl862xx_evlan_block ingress_evlan;
 	struct mxl862xx_evlan_block egress_evlan;
+	/* tag_8021q state */
+	u16 bridge_port_cpu;
+	unsigned long host_flood_block;
+	bool host_flood_uc;
+	bool host_flood_mc;
+	struct work_struct host_flood_work;
+	u16 tag_8021q_vid;
+	struct mxl862xx_evlan_block cpu_egress_evlan;
 };
 
 /**
@@ -193,6 +223,7 @@ struct mxl862xx_pcs {
  * @crc_err_work:       deferred work for taking down all ports on CRC errors
  * @crc_err:            set atomically before CRC-triggerd takedown,
  *                      cleared after
+ * @tag_proto:          active DSA tag protocol (native or 8021q)
  * @drop_meter:         index of the single shared zero-rate firmware meter
  *                      used to unconditionally drop traffic (used to block
  *                      flooding)
@@ -201,19 +232,25 @@ struct mxl862xx_pcs {
  * @ports:              per-port state, indexed by switch port number
  * @evlan_ingress_size: per-port ingress Extended VLAN block size
  * @evlan_egress_size:  per-port egress Extended VLAN block size
+ * @cpu_evlan_ingress_size: CPU port ingress EVLAN block size (tag_8021q)
  * @vf_block_size:      per-port VLAN Filter block size
+ * @tag_8021q_setup_done: true after tag_8021q virtual CTPs and
+ *                        dsa_tag_8021q_register() have completed
  */
 struct mxl862xx_priv {
 	struct dsa_switch *ds;
 	struct mdio_device *mdiodev;
 	struct work_struct crc_err_work;
 	unsigned long crc_err;
+	enum dsa_tag_protocol tag_proto;
 	u16 drop_meter;
 	struct mxl862xx_pcs serdes_ports[8];
 	struct mxl862xx_port ports[MXL862XX_MAX_PORTS];
 	u16 evlan_ingress_size;
 	u16 evlan_egress_size;
+	u16 cpu_evlan_ingress_size;
 	u16 vf_block_size;
+	bool tag_8021q_setup_done;
 };
 
 #endif /* __MXL862XX_H */
