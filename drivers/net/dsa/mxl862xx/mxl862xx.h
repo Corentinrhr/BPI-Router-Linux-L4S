@@ -175,6 +175,18 @@ struct mxl862xx_port {
 };
 
 /**
+ * struct mxl862xx_pcs - link SerDes interfaces to bridge ports
+ * @pcs:  &struct phylink_pcs instance
+ * @priv: pointer to &struct mxl862xx_priv
+ * @port: bridge port index
+ */
+struct mxl862xx_pcs {
+	struct phylink_pcs pcs;
+	struct mxl862xx_priv *priv;
+	int port;
+};
+
+/**
  * struct mxl862xx_priv - driver private data for an MxL862xx switch
  * @ds:                 pointer to the DSA switch instance
  * @mdiodev:            MDIO device used to communicate with the switch firmware
@@ -184,6 +196,8 @@ struct mxl862xx_port {
  * @drop_meter:         index of the single shared zero-rate firmware meter
  *                      used to unconditionally drop traffic (used to block
  *                      flooding)
+ * @serdes_ports:       SerDes interfaces incl. sub-interfaces in case of
+ *                      10G_QXGMII
  * @ports:              per-port state, indexed by switch port number
  * @evlan_ingress_size: per-port ingress Extended VLAN block size
  * @evlan_egress_size:  per-port egress Extended VLAN block size
@@ -195,6 +209,7 @@ struct mxl862xx_priv {
 	struct work_struct crc_err_work;
 	unsigned long crc_err;
 	u16 drop_meter;
+	struct mxl862xx_pcs serdes_ports[8];
 	struct mxl862xx_port ports[MXL862XX_MAX_PORTS];
 	u16 evlan_ingress_size;
 	u16 evlan_egress_size;
