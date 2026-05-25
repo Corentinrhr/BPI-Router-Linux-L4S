@@ -1,0 +1,79 @@
+name: Sync Upstream Branches
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 4 * * 1'
+
+concurrency:
+  group: sync-upstream
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        branch: ['6.12-main', '6.19-main']
+
+    steps:
+      - name: Checkout local branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ matrix.branch }}
+          fetch-depth: 0
+          token: ${{ secrets.GH_PAT }}
+
+      - name: Configure Git identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Sync with frank-w upstream and preserve custom files
+        run: |
+          git remote add upstream https://github.com/frank-w/BPI-Router-Linux.git || true
+          git fetch upstream ${{ matrix.branch }}
+          
+          # Backup custom workflows
+          mkdir -p /tmp/custom_workflows
+          cp -r .github/workflows/* /tmp/custom_workflows/ 2>/dev/null || true
+          
+          # Check if README.md exists and backup only if present
+          if [ -f "README.md" ]; then
+            cp README.md /tmp/custom_readme.md
+            HAS_README=true
+          else
+            HAS_README=false
+          fi
+          
+          # Reset local branch to upstream state
+          git reset --hard upstream/${{ matrix.branch }}
+          
+          # Restore custom workflows
+          mkdir -p .github/workflows
+          cp /tmp/custom_workflows/* .github/workflows/ 2>/dev/null || true
+          
+          # Restore README.md only if it existed originally
+          if [ "$HAS_README" = true ]; then
+            cp /tmp/custom_readme.md README.md
+          fi
+          
+          # Stage changes: workflows always, README only if present
+          git add -f .github/workflows/
+          if [ "$HAS_README" = true ]; then
+            git add -f README.md
+          fi
+          
+          # Commit and push if there are changes
+          if ! git diff --cached --quiet; then
+            git commit -m "chore: preserve custom L4S workflows and README [skip ci]"
+          fi
+          
+          # Push to origin (force required after reset)
+          git push origin ${{ matrix.branch }} --force
+
+      - name: Write job summary
+        run: |
+          echo "### Upstream Sync Result - ${{ matrix.branch }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Upstream**: frank-w/BPI-Router-Linux @ ${{ matrix.branch }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **HEAD commit**: $(git rev-parse HEAD)" >> $GITHUB_STEP_SUMMARY
