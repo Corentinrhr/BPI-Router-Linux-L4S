@@ -1,0 +1,99 @@
+name: Patch L4S (6.12)
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 5 * * 1'
+
+concurrency:
+  group: patch-l4s-612
+  cancel-in-progress: false
+
+jobs:
+  patch-l4s:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout 6.12-main
+        uses: actions/checkout@v4
+        with:
+          ref: '6.12-main'
+          fetch-depth: 0
+          token: ${{ secrets.GH_PAT }}
+
+      - name: Configure Git identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Add L4STeam remote and fetch
+        run: |
+          git remote add l4s https://github.com/L4STeam/linux.git
+          git fetch l4s l4steam-6.12.y
+          echo "L4S_COMMIT=$(git rev-parse l4s/l4steam-6.12.y)" >> $GITHUB_ENV
+
+      - name: Create or reset target branch
+        run: |
+          TARGET="6.12-l4s-patch-main"
+          if git ls-remote --exit-code --heads origin $TARGET; then
+            git branch -D $TARGET 2>/dev/null || true
+          fi
+          git checkout -b $TARGET
+
+      - name: Protect workflows
+        run: |
+          cp .gitattributes .gitattributes.bak 2>/dev/null || true
+          echo ".github/workflows/** merge=ours" >> .gitattributes
+          git config merge.ours.driver true
+          git add .gitattributes
+          git commit -m "Protect .github/workflows from L4S merge" || echo "Nothing to commit"
+
+      - name: Prepare clean L4S branch
+        run: |
+          TARGET="6.12-l4s-patch-main"
+          git checkout -b l4s-clean l4s/l4steam-6.12.y
+          rm -rf .github/workflows 2>/dev/null || true
+          git rm -rf .github/workflows 2>/dev/null || true
+          if ! git diff --cached --quiet; then
+            git commit -m "Delete L4STeam workflows before merging"
+          else
+            echo "No L4STeam workflows found to delete"
+          fi
+          git checkout $TARGET
+
+      - name: Merge L4S into target branch
+        id: merge
+        run: |
+          if git merge l4s-clean --no-edit -m "Merge L4S (commit: $L4S_COMMIT)"; then
+            echo "merge_status=success" >> $GITHUB_OUTPUT
+          else
+            echo "merge_status=conflict" >> $GITHUB_OUTPUT
+            git diff --name-only --diff-filter=U > /tmp/conflict_files.txt
+            git checkout --ours -- $(grep -v "^net/" /tmp/conflict_files.txt) 2>/dev/null || true
+            git checkout --theirs -- $(grep "^net/" /tmp/conflict_files.txt) 2>/dev/null || true
+            git add -A
+            git commit --no-edit -m "Merge L4S with automatic conflict resolution"
+          fi
+
+      - name: Restore gitattributes
+        run: |
+          if [ -f .gitattributes.bak ]; then mv .gitattributes.bak .gitattributes; else git rm -f .gitattributes || true; fi
+          git add .gitattributes || true
+          git commit -m "Restore .gitattributes" || echo "Nothing to commit"
+
+      - name: Enable L4S options in BPI defconfigs
+        run: |
+          for DEFCONFIG in $(find arch/arm64/configs arch/arm/configs -name "*bpi*defconfig" 2>/dev/null); do
+            grep -qx "CONFIG_TCP_CONG_DCTCP=y"  $DEFCONFIG || echo "CONFIG_TCP_CONG_DCTCP=y"  >> $DEFCONFIG
+            grep -qx "CONFIG_TCP_CONG_PRAGUE=m" $DEFCONFIG || echo "CONFIG_TCP_CONG_PRAGUE=m" >> $DEFCONFIG
+            grep -qx "CONFIG_NET_SCH_DUALPI2=m" $DEFCONFIG || echo "CONFIG_NET_SCH_DUALPI2=m" >> $DEFCONFIG
+            grep -qx "CONFIG_NET_SCH_FQ=y"      $DEFCONFIG || echo "CONFIG_NET_SCH_FQ=y"      >> $DEFCONFIG
+          done
+          git add arch/arm/configs/ arch/arm64/configs/ 2>/dev/null || true
+          git commit -m "Enable L4S in defconfigs" || echo "Nothing to commit"
+
+      - name: Cleanup L4S branch
+        run: git branch -D l4s-clean 2>/dev/null || true
+
+      - name: Push target branch
+        run: git push origin 6.12-l4s-patch-main --force
