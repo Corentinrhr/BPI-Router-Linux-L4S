@@ -1,0 +1,92 @@
+name: Enable L4S Routing (6.19)
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 11 * * 1'
+
+concurrency:
+  group: enable-l4s-routing-619
+  cancel-in-progress: false
+
+jobs:
+  enable-l4s:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout 6.19-main
+        uses: actions/checkout@v4
+        with:
+          ref: '6.19-main'
+          fetch-depth: 0
+          token: ${{ secrets.GH_PAT }}
+
+      - name: Configure Git identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Save existing workflows from target branch
+        run: |
+          TARGET="6.19-l4s-routing-main"
+          mkdir -p /tmp/saved-workflows
+
+          if git ls-remote --exit-code --heads origin $TARGET; then
+            git fetch origin $TARGET
+            # Extract only .github/workflows/ from the existing target branch into a temp dir
+            git archive origin/$TARGET -- .github/workflows/ \
+              | tar -x -C /tmp/saved-workflows 2>/dev/null || true
+            echo "HAS_SAVED_WORKFLOWS=true" >> $GITHUB_ENV
+          else
+            echo "HAS_SAVED_WORKFLOWS=false" >> $GITHUB_ENV
+          fi
+
+      - name: Create or reset target branch
+        run: |
+          TARGET="6.19-l4s-routing-main"
+          git branch -D $TARGET 2>/dev/null || true
+          git checkout -b $TARGET
+
+      - name: Restore workflows from target branch (no new imports)
+        run: |
+          if [ "$HAS_SAVED_WORKFLOWS" = "true" ] && [ -d /tmp/saved-workflows/.github/workflows ]; then
+            # Overwrite with the target branch's own workflows — discard any new ones from 6.19-main
+            rm -rf .github/workflows/
+            cp -r /tmp/saved-workflows/.github/workflows/ .github/workflows/
+            git add -f .github/workflows/
+            if ! git diff --cached --quiet; then
+              git commit -m "chore: restore existing workflows from previous target branch state"
+            fi
+          fi
+
+      - name: Enable native L4S routing options in BPI defconfigs
+        run: |
+          for DEFCONFIG in $(find arch/arm64/configs arch/arm/configs -name "*bpi*defconfig" 2>/dev/null); do
+            # Nettoyer les anciennes entrées pour éviter les doublons
+            sed -i '/CONFIG_TCP_CONG_ADVANCED/d' $DEFCONFIG
+            sed -i '/CONFIG_TCP_CONG_PRAGUE/d' $DEFCONFIG
+            sed -i '/CONFIG_TCP_CONG_DCTCP/d' $DEFCONFIG
+            sed -i '/CONFIG_TCP_CONG_BBR/d' $DEFCONFIG
+            sed -i '/CONFIG_NET_SCH_DUALPI2/d' $DEFCONFIG
+            sed -i '/CONFIG_NET_SCH_FQ/d' $DEFCONFIG
+            sed -i '/CONFIG_NET_SCH_PIE/d' $DEFCONFIG
+            sed -i '/CONFIG_NET_SCH_FQ_PIE/d' $DEFCONFIG
+
+            # L4S
+            echo "CONFIG_TCP_CONG_ADVANCED=y" >> $DEFCONFIG
+            echo "CONFIG_TCP_CONG_PRAGUE=m" >> $DEFCONFIG
+            echo "CONFIG_TCP_CONG_DCTCP=m" >> $DEFCONFIG
+            echo "CONFIG_TCP_CONG_BBR=m" >> $DEFCONFIG
+            echo "CONFIG_NET_SCH_DUALPI2=m" >> $DEFCONFIG
+            echo "CONFIG_NET_SCH_FQ=m" >> $DEFCONFIG
+            echo "CONFIG_NET_SCH_PIE=m" >> $DEFCONFIG
+            echo "CONFIG_NET_SCH_FQ_PIE=m" >> $DEFCONFIG
+          done
+
+          git add arch/arm64/configs/ arch/arm/configs/ 2>/dev/null || true
+          if ! git diff --cached --quiet; then
+            git commit -m "Enable L4S routing (Prague, DualPI2, FQ_PIE, BBR)"
+          fi
+
+      - name: Push target branch
+        run: git push origin 6.19-l4s-routing-main --force
