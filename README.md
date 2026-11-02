@@ -1,226 +1,150 @@
-# Kernel 6.12 for BananaPi R2/R64/R2Pro/R3/R4
+# Banana Pi Custom Linux Kernel (L4S Support)
 
-![CI](https://github.com/frank-w/BPI-Router-Linux/workflows/CI/badge.svg?branch=6.12-main)
+This repository provides an automated GitHub Actions CI workflow to build custom Linux kernels for Banana Pi router boards, based on the [frank-w/BPI-Router-Linux](https://github.com/frank-w/BPI-Router-Linux) codebase. It compiles the kernel and packages the necessary boot images and modules for multiple boards, including the BPI-R2, BPI-R3, BPI-R4, BPI-R64, and BPI-R2Pro.
 
-## Requirements
+This specific build is customized to include L4S (Low Latency, Low Loss, and Scalable Throughput) features for modern Linux kernels.
 
-On a x86/x64-host you need cross compile tools for the armhf architecture (bison and flex-package are needed for kernels >=4.16):
-```sh
-#for r2
-sudo apt install gcc-arm-linux-gnueabihf libc6-armhf-cross u-boot-tools bc make ccache gcc libc6-dev libncurses5-dev libssl-dev bison flex
-#for r64 / r2pro / r3 / r4
-sudo apt install gcc-aarch64-linux-gnu u-boot-tools bc make gcc ccache libc6-dev libncurses5-dev libssl-dev bison flex
-```
-If you build it directly on the BananaPi-R2/R64 (not recommended) you do not need the crosscompile-packages gcc-arm-linux-gnueabihf/gcc-aarch64-linux-gnu and libc6-armhf-cross
+---
 
-## Issues
+## Installation Guide (BPI-R4 Example)
 
-Ubuntu 22 seems not set update-alternatives for gcc, so build.sh will report crosscompiler is not installed
+The following instructions explain how to install the newly compiled kernel on a Banana Pi BPI-R4 running a `frank-w` Debian/Ubuntu environment.
 
-```sh
-for i in $(ls /usr/bin/arm-linux-gnueabihf-gcc-{8..12});do sudo update-alternatives --install /usr/bin/arm-linux-gnueabihf-gcc arm-linux-gnueabihf-gcc $i 50;done
-sudo update-alternatives --config arm-linux-gnueabihf-gcc
+### 1. Download Release Artifacts
+From the repository's **Releases** page, download the specific files for your board architecture. For the BPI-R4, you will need:
+- `bpi-r4-<version>.itb` (The bootable Flattened Image Tree containing the kernel and device tree)
+- `linux-image-<version>_arm64.deb` and `linux-headers-<version>_arm64.deb` (Kernel modules and headers)
 
-for i in $(ls /usr/bin/aarch64-linux-gnu-gcc-{8..12});do sudo update-alternatives --install /usr/bin/aarch64-linux-gnu-gcc aarch64-linux-gnu-gcc $i 50;done
-sudo update-alternatives --config aarch64-linux-gnu-gcc
-```
-### R2
+*(Alternatively, download the `bpi-r4_<version>.tar.gz` archive to extract modules manually).*
 
-internal wifi/bt does not work anymore on 6.0+ as there are internal changes in linux which break mt6625 driver
+### 2. Update the Boot Partition
+U-Boot requires the `.itb` file to be placed in the `BPI-BOOT` partition, typically mounted at `/boot`. Always back up your working kernel before overwriting it.
 
-### R64
-* pcie-slot CN8 does not detect gen2-cards due to hardware-issue (missing capacitors)
-* some pcie-cards are not detected because of wrong memory-mapping of BAR0
-
-### R2Pro
-* mic-switch not working (hw related)
-
-### R3
-* vlan on left SFP not working (6.2 + Fix from Felix works)
-  https://patchwork.kernel.org/project/linux-mediatek/list/?series=698421
-* some issues with some GPON and copper-SFP
-
-### R4
-
-* some issues with some GPON and copper-SFP
-* wifi bad signal (noise issue)
-  https://forum.banana-pi.org/t/bpi-r4-wifi-range/19418/182
-
-## Usage
-
-if you want to build for other board than R2, change "board" in build.conf first
-
-```sh
-  ./build.sh importconfig
-  ./build.sh config #to configure manually with menuconfig
-  ./build.sh
-```
-the option "pack" creates a tar.gz-file which contains folders "BPI-BOOT" (content of Boot-partition aka /boot) and BPI-ROOT (content for rootfs aka /). simply backup your existing kernel (uImage or bpi-rX.itb on /boot) and unpack the content of these 2 folders to your system
-
-you can also install direct to sd-card which makes a backup of kernelfile, here you have to change your uEnv.txt if you use a new filename (by default it's containing kernelversion)
-
-### Usage with docker
-
-The Dockerfile in `utils/docker/` provides a build environment without installing the native compilers on the local system.
-
-The local directory will be mounted into the docker container. All changes will also be present in the respository folder.
-
-1. Build the docker container for building once:
-    ```sh
-    sh ./utils/docker/build_container.sh
-    ```
-
-    Note: if you get this error: "Got permission denied while trying to connect to the Docker daemon socket at ..." you have to configure non-root
-    https://docs.docker.com/engine/install/linux-postinstall/#manage-docker-as-a-non-root-user
-    ```sh
-    sudo usermod -aG docker $USER
-    newgrp docker
-    ```
-1. Start and connect to the running docker container: 
-    ```sh 
-    sh ./utils/docker/run.sh
-    ```
-1. Now you can use the commands from above:
-    ```sh 
-    ./build.sh
-    ```
-1. Close the container with `exit` or `CTRL-D`.
-1. Your build artifacts from the build script will be in the folder `./SD/` 
-
-
-If you want to clean up you can remove all containers (and the associated docker images) with:
-```sh
-docker rmi bpi-cross-compile:1 --force
-```
-## install kernel (debian/ubuntu images)
-
-either on host-system (build maschine) and inserted sdcard:
-
-```sh
-./build.sh install
+```bash
+sudo cp /boot/bpi-r4.itb /boot/bpi-r4.itb.bak
+sudo cp bpi-r4-6.19.0-bpi-r4-l4s-routing-main.itb /boot/bpi-r4.itb
 ```
 
-or in running system (first make backup of your current itb in /boot) by unpacking
-the tar.gz file created by pack option in build.sh
+### 3. Install Kernel Modules
+The safest way to install the accompanying kernel modules is via the Debian packages, ensuring they are correctly registered with `dpkg`.
 
-```sh
-kernelfile=bpi-r3_6.6.47-main.tar.gz
-sudo tar -xzf $kernelfile --strip-components=1 -C /boot/ BPI-BOOT
-echo "unpack kernel-modules to bpi-root loopdev..."
-sudo tar -xzf $kernelfile --strip-components=2 -C /lib/. BPI-ROOT/lib/
+```bash
+sudo dpkg -i linux-image-6.19.0-bpi-r4-l4s-routing-main_*_arm64.deb
+sudo dpkg -i linux-headers-6.19.0-bpi-r4-l4s-routing-main_*_arm64.deb
 ```
 
-## Branch details
+**Manual Extraction Alternative:**
+If using the `.tar.gz` file instead of Debian packages, extract the modules directly into your system's library folder.
+```bash
+sudo tar -xzf bpi-r4_6.19.0-l4s-routing-main.tar.gz --strip-components=2 -C /lib/. BPI-ROOT/lib/
+```
 
-Kernel upstream + BPI-R2 / R64
-* <a href="https://github.com/frank-w/BPI-Router-Linux/tree/4.9-main">4.9-main</a>
-* <a href="https://github.com/frank-w/BPI-Router-Linux/tree/4.14-main">4.14-main</a>
-* <a href="https://github.com/frank-w/BPI-Router-Linux/tree/4.19-main">4.19-main</a> | <a href="https://github.com/frank-w/BPI-R2-4.14/tree/4.19-r64-main">4.19-r64-main</a>
-* <a href="https://github.com/frank-w/BPI-Router-Linux/tree/5.4-main">5.4-main</a>
-* <a href="https://github.com/frank-w/BPI-Router-Linux/tree/5.10-main">5.10-main</a>
-* <a href="https://github.com/frank-w/BPI-Router-Linux/tree/5.15-main">5.15-main</a>
-* <a href="https://github.com/frank-w/BPI-Router-Linux/tree/6.1-main">6.1-main</a>
-* <a href="https://github.com/frank-w/BPI-Router-Linux/tree/6.6-main">6.6-main</a>
-* 6.12-main
+### 4. Reboot and Verify
+Restart your router to boot into the newly installed L4S kernel.
 
-## Kernel versions
+```bash
+sudo reboot
+```
 
-Kernel features by version
+Once reconnected via SSH, verify the active kernel version and build date.
 
-R2/R64:
+```bash
+uname -a
+```
 
-| Feature            | 4.4 | 4.9 | 4.14 | 4.19 | 5.4 | 5.10 | 5.15 | 6.1 | 6.6 | 6.12 |
-|--------------------| --- | --- | ---  | ---  | --- | ---- | ---- | --- | --- | --- |
-| PCIe               |  Y  |  Y  |  Y   |  Y   |  Y  |  Y   |  Y   |  Y  |  Y  |  Y  |
-| SATA               |  Y  |  Y  |  Y   |  Y   |  Y  |  Y   |  Y   |  Y  |  Y  |  Y  |
-| 2 GMAC             |  Y  |  Y  |  Y   |  Y   |  N  |  N   |  N   |  Y  |  Y  |     |
-| DSA                |  N  |  Y  |  Y   |  Y   |  Y  |  Y   |  Y   |  Y  |  Y  |  Y  |
-| USB                |  Y  |  Y  |  Y   |  Y   |  Y  |  Y   |  Y   |  Y  |  Y  |  Y  |
-| VLAN (dsa)         |     |     |  Y   |  N   |  Y  |  Y   |  Y   |  Y  |  Y  |  Y  |
-| VLAN-aware Bridge  |     |     |  N   |  Y   |  Y  |  Y   |  Y   |  Y  |  Y  |  Y  |
-| HW NAT (R2)        |     |  Y  |  Y   |      |     |  N   |  Y   |  Y  |  Y  |  Y  |
-| HW QOS (R2)        |     |  Y  |  ?   |      |     |  N   |  N   |     |     |     |
-| Crypto             |  Y  |  Y  |  Y   |      |  Y  |      |      |     |     |     |
-| WIFI (internal)    |     |  Y  |  Y   |  Y   |  Y  |  Y   |  Y   |  N  |  N  |  N  |
-| BT                 |  N  |  N  |  Y   |  Y   |  Y  |  Y   |  Y   |  N  |  N  |  N  |
-| VIDEO (R2 only)    |  Y  |  N  |  Y   |  Y   |  Y  |  Y   |  Y   |  Y  |  Y  |     |
-| ACPI (R2)          |  ?  |  N  |  Y   |  Y   |  Y  |      |      |  Y  |  N  |     |
-| IR (R2)            |  ?  |  N  |  N   |  N   |  Y  |  Y   |  ?   |  Y  |  Y  |     |
-| WIFI (R64)         |  N  |  N  |  N   |  N   |  Y  |  Y   |  Y   |  Y  |  Y  |     |
-| BT (R64)           |  N  |  N  |  N   |  N   |  Y  |  Y   |  Y   |  Y  |  Y  |     |
-| Other options      |--|--|--|--|--|--|--|--|--|
-| OpenVPN            |  ?  |  Y  |  Y   |  Y   |  Y  |  Y   |  Y   |  Y  |  Y  |  Y  |
-| iptables (R2)      |  ?  |  Y  |  Y   |  Y   |  Y  |  Y   |  Y   |  Y  |  Y  |  Y  |
-| nftables (R2)      |  ?  |  N  |  N   |  Y   |  Y  |  Y   |  Y   |  Y  |  Y  |  Y  |
-| LXC / Docker (R2)  |  ?  |  ?  |  Y   |  Y   |  Y  |  Y   |  Y   |  Y  |  Y  |  Y  |
+---
 
-Symbols:
+## L4S Routing Setup & Testing
 
-|Symbol|Meaning|
-|------|-------|
-|  ?   |Unsure |
-|  ()  |Testing|
+This section describes how to enable and test the L4S architecture on your BPI-R4 router. 
 
-(Testing in separate branch wlan/hdmi/hwnat/hwqos)
+*(Note: Since TCP Prague is not natively included in the mainline kernel tree yet, this test uses **BBR** as the scalable TCP congestion control algorithm alongside **DualPI2** as the Active Queue Management (AQM) scheduler).*
 
-* WIFI/BT on R2 needs WMT-tools called before
-* HW-NAT only works between LAN and WAN (bridge unclear, wifi not supported)
-* HW-QoS is merged into 4.14-main, but we do not know how to test it
-* ACPI-feature means System is powered off, not only halted (power-consumption ~0.2W, no reboot on reset), reboot-problem on R2 with soldered power-switch (see https://github.com/frank-w/BPI-R2-4.14/issues/35). Power-off is also initiated by pressing the power-switch, on R64 not currently not available
-* VIDEO is hdmi-output (X-server/framebuffer-console)...here some resolutions are not supported by vendor-driver. R64 does not have HDMI
+### 1. Prerequisites and Module Activation
 
+First, identify the target interface where you want to apply the testing rules (e.g., `wan` or `lan0`). Then, enable ECN and load the necessary kernel modules.
 
-kernel 4.4 / uboot 2014-04: https://github.com/frank-w/BPI-R2-4.4
-mainline-uboot: https://github.com/frank-w/u-boot
+```bash
+# 1. Identify the interface (ignore the '@' part, e.g., use 'wan' instead of 'wan@eth0')
+ip -br a
+INTERFACE=wan
 
-R2Pro/R3/R4
+# 2. Enable ECN (Explicit Congestion Notification) - Required for L4S
+sudo sysctl -w net.ipv4.tcp_ecn=1
 
-| Feature            | 6.1 | 6.6 | 6.12 |
-|--------------------| --- | --- | --- |
-| USB                |  Y  |  Y  |  Y  |
-| PCIe               |  Y  |  Y  |  Y  |
-| SATA (r2pro)       |  Y  |  Y  |  Y  |
-| DSA                |  Y  |  Y  |  Y  |
-| 2 GMAC             |  Y  |  Y  |  Y  |
-| SFP (R3)           |  Y  |  Y  |  Y  |
-| VLAN               | Y/P | Y/P |  Y  |
-| HW NAT (R3)        |  Y  |  Y  |  Y  |
-| WIFI (r3 internal) |  Y  |  Y  |  Y  |
-| VIDEO (R2pro only) |  Y  |  Y  |  Y  |
-| IR (R2pro)         |  ?  |  ?  |  ?  |
-| R3mini support     |  N  |  Y  |  Y  |
-| R4 support         |  N  |  N  |  Y  |
+# 3. Load and activate the BBR TCP congestion control algorithm
+sudo modprobe tcp_bbr
+sudo sysctl -w net.ipv4.tcp_congestion_control=bbr
 
-P=partial (vlan on r3 only works on dsa-ports, not on left SFP)
+# 4. Load the required queuing discipline (Qdisc) modules
+sudo modprobe sch_htb
+sudo modprobe sch_dualpi2
+```
 
-## Images
+**Install Ookla Speedtest CLI (AArch64)**
+You will need a reliable tool to generate network load. Download the official Ookla client for ARM64:
+```bash
+cd /tmp
+wget https://install.speedtest.net/app/cli/ookla-speedtest-1.2.0-linux-aarch64.tgz
+tar -xvzf ookla-speedtest-1.2.0-linux-aarch64.tgz
+sudo mv speedtest /usr/local/bin/
+```
 
-Latest images are created by my BPI-Router-Images repo
-https://github.com/frank-w/BPI-Router-Images
+### 2. Creating an Artificial Bottleneck
 
-and stored on my gdrive
-https://drive.google.com/drive/folders/1A5S7_82Bg4EYxjzdQ5FKyBw9Qi2C3uK-?usp=drive_link
+For DualPI2 to engage, network congestion must occur **locally on the router**. We will artificially limit the interface bandwidth to 40 Mbit/s using `htb`, and then attach `dualpi2` to manage the queuing.
 
-discussion in bpi forum:
-https://forum.banana-pi.org/t/debian-ubuntu-image-creation/15826
+```bash
+# Limit the bandwidth to 40 Mbit/s on the chosen interface
+sudo tc qdisc add dev $INTERFACE root handle 1: htb default 10
+sudo tc class add dev $INTERFACE parent 1: classid 1:10 htb rate 40mbit
 
-more information:
-https://www.fw-web.de/dokuwiki/doku.php?id=en:bpi-r4:start#debian_ubuntu_image_building
+# Attach DualPI2 to manage the throttled traffic
+sudo tc qdisc add dev $INTERFACE parent 1:10 handle 10: dualpi2
+```
 
-## Links
+### 3. Testing Methodology
 
-* BPI-R2: http://www.banana-pi.org/r2.html
-* BPI-R64: http://www.banana-pi.org/r64.html
-* BPI-R2Pro: https://wiki.banana-pi.org/Banana_Pi_BPI-R2_Pro
-* BPI-R3: https://wiki.banana-pi.org/Banana_Pi_BPI-R3
-* BPI-R4: https://wiki.banana-pi.org/Banana_Pi_BPI-R4
-* Kernel: https://www.kernel.org/ , Stable-RC: https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux-stable-rc.git/
-* linux-mediatek: https://patchwork.kernel.org/project/linux-mediatek/list/, Threaded: http://lists.infradead.org/pipermail/linux-mediatek/
-* Forum: https://forum.banana-pi.org/c/banana-router/62
-* Wiki: https://www.fw-web.de/dokuwiki/doku.php?id=en:start
+To validate L4S, we will run a stress test (Speedtest) while continuously measuring latency (Ping). The goal is to see stable ping times despite the line being completely saturated.
 
-License
-----
-GPL-2.0
+Open three separate SSH sessions/terminals to the router:
 
-*Free Software, Hell Yeah!*
+**Terminal 1: Latency Monitoring**
+```bash
+ping 8.8.8.8
+```
+
+**Terminal 2: DualPI2 Qdisc Monitoring**
+```bash
+watch -n 1 tc -s qdisc show dev wan
+```
+
+**Terminal 3: Load Generation**
+```bash
+speedtest --accept-license --accept-gdpr
+```
+
+### 4. Interpreting the Results
+
+During the Speedtest, the `tc` command output in Terminal 2 should look similar to this:
+
+```text
+qdisc htb 1: root refcnt 2 r2q 10 default 0x10 direct_packets_stat 57 direct_qlen 1000
+ Sent 46109310 bytes 74139 pkt (dropped 0, overlimits 29869 requeues 0)
+ backlog 0b 11288p requeues 0
+qdisc dualpi2 10: parent 1:10 [Unknown qdisc, optlen=112]
+ Sent 46086920 bytes 73958 pkt (dropped 0, overlimits 0 requeues 0)
+ backlog 0b 0p requeues 0
+```
+
+- **`overlimits 29869` (on htb):** The artificial bottleneck is working. Thousands of packets attempted to exceed the 40 Mbit/s limit and were queued instead of dropped.
+- **`[Unknown qdisc, optlen=112]` (on dualpi2):** DualPI2 successfully processed the traffic (46 MB sent). The "Unknown qdisc" message is normal and expected; it simply means the current version of the `iproute2` (`tc`) utility installed on the OS does not yet know how to visually format DualPI2's advanced statistics (Classic vs L4S), even though the kernel is doing its job.
+- **Expected Outcome:** In Terminal 1, the ping to 8.8.8.8 should remain stable without massive latency spikes during the entire Speedtest, confirming that the AQM successfully mitigated Bufferbloat using ECN.
+
+### 5. Cleanup (Post-Test)
+
+Once your tests are complete, you must remove the traffic control rules to lift the 40 Mbit/s restriction and restore your interface's full speed.
+
+```bash
+sudo tc qdisc del dev wan root
+```
